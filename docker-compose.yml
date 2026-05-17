@@ -1,0 +1,29 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:////data/tsukiba.db
+      REDIS_URL: redis://redis:6379/0
+      MANAGE_KEY: secretkey
+      CAPTCHA_SECRET: change-this-secret
+    volumes:
+      - board-data:/data
+      - ./assets:/app/assets
+      - ./media:/app/media
+      - ./thumb:/app/thumb
+      - ./favicon.ico:/app/favicon.ico:ro
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+volumes:
+  board-data:
+  redis-data:

@@ -1,0 +1,12 @@
+<div class="post-file">
+  <div class="file-info">
+    {% if file.exists %}
+      <a href="{{ file.media_url }}" title="Скачать файл" download>{{ file.extension }}</a>
+    {% else %}
+      <s title="Файл удалён">{{ file.extension }}</s>
+    {% endif %}, {{ file.info }}
+  </div>
+  <a href="{{ file.media_url if file.exists else file.thumb_url }}" target="_blank">
+    <img class="file-thumb{% if file.is_video %} video-thumb{% endif %}" src="{{ file.thumb_url }}" width="{{ file.width }}" height="{{ file.height }}">
+  </a>
+</div>

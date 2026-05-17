@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block header_content %}
+  {% if not setup_mode %}| Страница: {% include "partials/pagination.html" %}{% endif %}
+{% endblock %}
+
+{% block body %}
+  <div class="manage-page">
+    {% if setup_mode %}
+      <form class="manage-form" method="post" action="/manage?key={{ manage_key }}">
+        <input type="hidden" name="action" value="initial_setup">
+        <input class="manage-input" type="text" name="max_file_size" placeholder="Максимальный общий размер файлов в Мб"><br>
+        <input class="manage-input" type="text" name="bump_limit" placeholder="Ответов до бамплимита"><br>
+        <input class="manage-input" type="text" name="max_threads" placeholder="Максимальное число активных тредов"><br>
+        <input class="manage-input" type="text" name="max_message_length" placeholder="Максимальная длина сообщения"><br>
+        <select class="manage-input" name="captcha">
+          {% for value, label in captcha_types %}
+            <option value="{{ value }}">Капча: {{ label }}</option>
+          {% endfor %}
+        </select><br>
+        <input class="manage-input" type="text" name="id" placeholder="Пропустить столько постов. 0: не пропускать."><br>
+        <input class="manage-pass" type="password" name="password" maxlength="100" placeholder="Пароль">
+        <input class="manage-pass-check" type="password" name="confirm_password" maxlength="100" placeholder="Проверка"><br>
+        <input class="manage-submit" type="submit" value="Сохранить">
+        <input type="hidden" name="stop_board" value="0">
+        <label><input class="stop-board" type="checkbox" name="stop_board" value="1"> Остановить доску</label>
+      </form>
+    {% else %}
+      {% if page == 0 %}
+        <form class="manage-form" method="post" action="/manage?key={{ manage_key }}">
+          <input type="hidden" name="action" value="setup">
+          <input class="manage-input" type="text" name="max_file_size" value="{{ options.max_file_size // (1024 * 1024) }}" placeholder="Максимальный общий размер файлов в Мб"><br>
+          <input class="manage-input" type="text" name="bump_limit" value="{{ options.bump_limit }}" placeholder="Ответов до бамплимита"><br>
+          <input class="manage-input" type="text" name="max_threads" value="{{ options.max_threads }}" placeholder="Максимальное число активных тредов"><br>
+          <input class="manage-input" type="text" name="max_message_length" value="{{ options.max_message_length }}" placeholder="Максимальная длина сообщения"><br>
+          <select class="manage-input" name="captcha">
+            {% for value, label in captcha_types %}
+              <option value="{{ value }}"{% if options.captcha == value %} selected{% endif %}>Капча: {{ label }}</option>
+            {% endfor %}
+          </select><br>
+          <input class="manage-pass" type="password" name="new_password" maxlength="100" placeholder="Новый пароль">
+          <input class="manage-pass-check" type="password" name="confirm_new_password" maxlength="100" placeholder="Проверка"><br>
+          <input class="pass" type="password" name="password" maxlength="100" placeholder="Пароль">
+          <input class="manage-submit" type="submit" value="Сохранить">
+          <input type="hidden" name="stop_board" value="0">
+          <label><input class="stop-board" type="checkbox" name="stop_board" value="1"{% if options.stop_board %} checked{% endif %}> Остановить доску</label>
+        </form>
+        <div class="stats">Постов за час:&nbsp;{{ stats.lastHour }}, за день:&nbsp;{{ stats.lastDay }}, в час:&nbsp;{{ stats.avgPerHour }}, в день:&nbsp;{{ stats.avgPerDay }}</div>
+      {% endif %}
+      <a id="mod"></a>
+      <form class="manage-mod" method="post" action="/mod">
+        {% include "partials/mod_form.html" %}
+        {% for entry in entries %}
+          <fieldset>
+            <legend>
+              {% if entry.is_thread %}
+                Тред <a href="/thread/{{ entry.thread_id }}">№{{ entry.thread_id }}</a>
+              {% else %}
+                Ответ в треде <a href="/thread/{{ entry.thread_id }}">№{{ entry.thread_id }}</a>
+              {% endif %}
+            </legend>
+            {% with post=entry.post %}
+              {% include "partials/post.html" %}
+            {% endwith %}
+          </fieldset>
+        {% endfor %}
+      </form>
+    {% endif %}
+  </div>
+{% endblock %}

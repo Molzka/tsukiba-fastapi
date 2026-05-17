@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block header_content %}
+  | <form class="search-form" method="get"><input class="search-input" type="text" name="search" placeholder="Поиск" value="{{ search }}"></form>
+{% endblock %}
+
+{% block body %}
+  <div class="catalog-page">
+    {% for thread in threads %}
+      <div id="thread-{{ thread.id }}" class="catalog-thread" tabindex="{{ thread.tabindex }}">
+        <a href="{{ thread.href }}"><img class="catalog-thumb{% if thread.is_video %} video-thumb{% endif %}" src="{{ thread.thumb_url }}" loading="lazy"></a>
+        <div class="catalog-reply-count">Ответов: {{ thread.reply_count }}{% if thread.op_mod %} <span class="op-mod-indicator" title="ОП-модерация">(М)</span>{% endif %}</div>
+        <div class="catalog-message">{{ thread.message_html|safe }}</div>
+      </div>
+    {% endfor %}
+  </div>
+{% endblock %}

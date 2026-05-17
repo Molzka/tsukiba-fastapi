@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block body %}
+  <div class="info-page">
+    <b>Разметка</b><br>
+    Ответ: <post-link>&gt;&gt;номер поста</post-link><br>
+    Цитата: <span class="quote">&gt;текст с новой строки</span><br>
+    Спойлер: [sp]<span class="spoiler">текст</span>[/sp]<br>
+    Зачёркнутый: [s]<s>текст</s>[/s]<br>
+    Наклонный: [i]<i>текст</i>[/i]<br><br>
+    <b>Технические данные</b><br>
+    Поддерживаются файлы формата: JPG, PNG, GIF, MP4 и WEBM<br>
+    Максимальный общий размер файлов: {{ max_file_size }}<br>
+    Ответов до бамплимита: {{ bump_limit }}<br>
+    Максимальное число активных тредов: {{ max_threads }}
+  </div>
+{% endblock %}

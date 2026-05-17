@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block header_content %}
+  | <a href="/archive">Архив</a> | Ответов: {{ reply_count }}
+{% endblock %}
+
+{% block body %}
+  <div class="archived-page">
+    <div class="thread-page">
+      <div id="thread-{{ thread_id }}" class="thread-container">
+        {% with post=thread %}
+          {% include "partials/post.html" %}
+        {% endwith %}
+        {% for reply in posts %}
+          {% with post=reply %}
+            {% include "partials/post.html" %}
+          {% endwith %}
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block body %}
+  <div class="info-page">
+    <b>GET</b><br>
+    Список тредов: /api/index<br>
+    Тред: /api/thread/{id}<br>
+    Пост: /api/id/{id}<br>
+    Параметры: /api/info<br>
+    Капча: /api/post<br><br>
+    <b>POST</b> (/api/post)<br>
+    Ответ в (0 — новый тред): parent<br>
+    Не поднимать тред: sage<br>
+    Сообщение: message<br>
+    Файлы: files<br>
+    Капча: captcha<br>
+    Проверка капчи: verify<br>
+  </div>
+{% endblock %}

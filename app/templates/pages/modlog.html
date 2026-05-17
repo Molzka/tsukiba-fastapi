@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block header_content %}
+  | Страница: {% include "partials/pagination.html" %}
+{% endblock %}
+
+{% block body %}
+  <div class="modlog-page">
+    <a id="mod"></a>
+    <form method="post">
+      {% with submit_label="Восстановить", return_url="" %}
+        {% include "partials/mod_form.html" %}
+      {% endwith %}
+      {% for entry in entries %}
+        <fieldset>
+          <legend>
+            {% if entry.is_thread %}Тред{% else %}Ответ в треде{% endif %}
+            {% if entry.thread_status in [0, 3] %}
+              <a href="{% if entry.thread_status == 0 %}/thread{% else %}/archived{% endif %}/{{ entry.thread_id }}">№{{ entry.thread_id }}</a>
+            {% else %}
+              <s title="Тред удалён">№{{ entry.thread_id }}</s>
+            {% endif %}, удалён {{ entry.deleted_by }}
+          </legend>
+          {% with post=entry.post %}
+            {% include "partials/post.html" %}
+          {% endwith %}
+        </fieldset>
+      {% endfor %}
+    </form>
+  </div>
+{% endblock %}

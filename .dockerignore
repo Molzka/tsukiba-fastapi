@@ -1,0 +1,12 @@
+.git
+.venv
+.tmp
+.uv-cache
+.uv-python
+__pycache__
+*.pyc
+*.egg-info
+.pytest_cache
+assets/database.db
+media
+thumb

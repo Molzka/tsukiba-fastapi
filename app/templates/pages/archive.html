@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block header_content %}
+  | <a href="/archive">Архив</a> | Страница: {% include "partials/pagination.html" %}
+{% endblock %}
+
+{% block body %}
+  <div class="archive-page">
+    {% for thread in threads %}
+      <div id="thread-{{ thread.id }}" class="catalog-thread" tabindex="{{ thread.tabindex }}">
+        <a href="{{ thread.href }}"><img class="catalog-thumb{% if thread.is_video %} video-thumb{% endif %}" src="{{ thread.thumb_url }}" loading="lazy"></a>
+        <div class="catalog-reply-count">Ответов: {{ thread.reply_count }}{% if thread.op_mod %} <span class="op-mod-indicator" title="ОП-модерация">(М)</span>{% endif %}</div>
+        <div class="catalog-message">{{ thread.message_html|safe }}</div>
+      </div>
+    {% endfor %}
+  </div>
+{% endblock %}

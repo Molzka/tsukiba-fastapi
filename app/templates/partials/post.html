@@ -1,0 +1,30 @@
+<div id="{{ post.id }}" class="{{ post.anchor_class }}">
+  <div id="post-{{ post.id }}" class="{{ post.post_class }} post-height{{ post.file_class }}" tabindex="0">
+    <div class="post-header">
+      {% if post.show_mod_box %}
+        <a class="mod-link" href="#mod"><input id="mod-{{ post.id }}" class="mod-box" name="mod-box" type="checkbox" value="{{ post.id }}"></a>
+      {% endif %}
+      <a class="{{ post.header_class }}"{% if post.header_href %} href="{{ post.header_href }}"{% endif %}>
+        <span class="post-number">№{{ post.id }}</span><span class="post-time"> {{ post.time }}</span>
+      </a>
+      {% if post.op_mod %}
+        <span class="op-mod-indicator" title="ОП-модерация">(М)</span>
+      {% endif %}
+      {% if post.sage %}
+        <span class="sage-indicator">(Сажа)</span>
+      {% endif %}
+      {{ post.action_html|safe }}
+    </div>
+    {% if post.files %}
+      <div class="files">
+        {% for file in post.files %}
+          {% include "partials/file.html" %}
+        {% endfor %}
+      </div>
+    {% endif %}
+    <div class="post-message">{{ post.message_html|safe }}</div>
+    {% if post.backlinks_html %}
+      <div class="backlinks">Ответы:&nbsp;{{ post.backlinks_html|safe }}</div>
+    {% endif %}
+  </div>
+</div>

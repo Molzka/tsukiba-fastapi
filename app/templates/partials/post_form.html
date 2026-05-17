@@ -1,0 +1,20 @@
+<form class="new-post-form" id="postform" method="post" action="/post" enctype="multipart/form-data">
+  {% if page_type == "short" %}
+    <input type="hidden" name="page-type" value="short">
+  {% endif %}
+  <input type="hidden" name="parent" value="{{ parent|default(0) }}">
+  <input type="hidden" name="verify" value="{{ captcha.verify }}">
+  <div class="post-form">
+    <a class="close-button" href="##">×</a>
+    {% if parent|default(0) == 0 %}
+      <input class="op-mod-pass" type="password" name="password" maxlength="100" placeholder="Пароль от треда">
+    {% else %}
+      <label class="sage-label"><input type="checkbox" name="sage" value="1"> Не поднимать тред</label>
+    {% endif %}
+    <input class="submit-new-post" type="submit" value="Отправить">
+    <textarea class="message-field" name="message" maxlength="{{ options.max_message_length }}" placeholder="Комментарий. Макс. длина: {{ options.max_message_length }}."></textarea>
+    <input class="captcha-field" type="text" name="captcha" maxlength="4" autocomplete="off" placeholder="Капча">
+    <img class="captcha-image" src="{{ captcha.captcha_image }}">
+    <input class="file-field" type="file" name="files[]" multiple title="Разрешено прикреплять до 4 файлов">
+  </div>
+</form>

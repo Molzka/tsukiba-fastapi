@@ -1,0 +1,8 @@
+{% if return_url %}
+  <input type="hidden" name="return-url" value="{{ return_url }}">
+{% endif %}
+<div class="mod-form">
+  <a class="close-button mod-close" href="##">×</a>
+  <input class="mod-pass" type="password" name="mod-pass" maxlength="100" placeholder="Пароль">
+  <input class="mod-submit" type="submit" value="{{ submit_label|default('Удалить') }}">
+</div>

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block header_content %}
+  | <a href="#postform">Новый пост</a> | Ответов: {{ reply_count }}
+{% endblock %}
+
+{% block body %}
+  {% include "partials/post_form.html" %}
+  <div class="{% if page_kind == 'short' %}short-page {% endif %}thread-page">
+    <a id="mod"></a>
+    <form method="post" action="/mod">
+      {% include "partials/mod_form.html" %}
+      <div id="thread-{{ thread_id }}" class="thread-container">
+        {% with post=thread %}
+          {% include "partials/post.html" %}
+        {% endwith %}
+        {% if page_kind == "short" and omitted > 0 %}
+          <div class="omitted-posts">Пропущено ответов: {{ omitted }}. Откройте <a href="/thread/{{ thread_id }}">полный тред</a>, чтобы посмотреть.</div>
+        {% endif %}
+        {% for reply in posts %}
+          {% with post=reply %}
+            {% include "partials/post.html" %}
+          {% endwith %}
+        {% endfor %}
+      </div>
+    </form>
+  </div>
+{% endblock %}

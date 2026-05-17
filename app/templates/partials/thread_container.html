@@ -1,0 +1,13 @@
+<div id="thread-{{ container.thread.id }}" class="thread-container">
+  {% with post=container.thread %}
+    {% include "partials/post.html" %}
+  {% endwith %}
+  {% if container.omitted > 0 %}
+    <div class="omitted-posts">Пропущено ответов: {{ container.omitted }}. Откройте тред, чтобы посмотреть.</div>
+  {% endif %}
+  {% for reply in container.replies %}
+    {% with post=reply %}
+      {% include "partials/post.html" %}
+    {% endwith %}
+  {% endfor %}
+</div>
