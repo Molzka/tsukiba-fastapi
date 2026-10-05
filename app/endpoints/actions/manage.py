@@ -49,6 +49,12 @@ async def manage_submit(
             )
         password = str(form.get("password") or "")
         confirm = str(form.get("confirm_password") or "")
+        if not password.strip():
+            return error_response(request, "Введите пароль администратора", 400)
+        if len(password) > 100:
+            return error_response(
+                request, "Пароль не должен превышать 100 символов", 400
+            )
         if password != confirm:
             return error_response(request, "Пароль не совпадает", 400)
         create_options(
@@ -71,6 +77,10 @@ async def manage_submit(
         return error_response(request, "Пароль введён неверно", 400)
     new_password = str(form.get("new_password") or "")
     confirm_new_password = str(form.get("confirm_new_password") or "")
+    if new_password and (not new_password.strip() or len(new_password) > 100):
+        return error_response(
+            request, "Пароль должен содержать от 1 до 100 символов", 400
+        )
     if new_password != confirm_new_password:
         return error_response(request, "Новый пароль не совпадает", 400)
     update_options(

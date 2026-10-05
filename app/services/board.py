@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, aliased
 from app.config import settings
 from app.models import BoardOption, Post
 from app.security import hash_password, verify_password
-from app.services.files import cleanup_files, upload_files, validate_files
+from app.services.files import cleanup_files, stage_uploads, validate_files
 from app.services.text import transform_message, validate_message
 
 STATUS_ACTIVE = 0
@@ -39,6 +39,8 @@ def create_options(
     password: str,
     post_id_seed: int = 0,
 ) -> BoardOption:
+    if not password.strip() or len(password) > 100:
+        raise ValueError("Пароль должен содержать от 1 до 100 символов")
     option = BoardOption(
         id=1,
         max_file_size=max_file_size_mb * 1024 * 1024,
@@ -198,8 +200,12 @@ def get_active_threads_list(session: Session) -> list[dict[str, object]]:
 
 
 def next_post_id(session: Session, options: BoardOption) -> int:
-    current_max = session.scalar(select(func.max(Post.id)))
-    return int(current_max or options.post_id_seed) + 1
+    return session.execute(
+        update(BoardOption)
+        .where(BoardOption.id == options.id)
+        .values(post_id_seed=BoardOption.post_id_seed + 1)
+        .returning(BoardOption.post_id_seed)
+    ).scalar_one()
 
 
 def display_time() -> str:
@@ -289,6 +295,28 @@ def submit_post(
     sage: bool = False,
     verify: str | None = None,
 ) -> int | str:
+    try:
+        result = _submit_post(
+            session,
+            options,
+            parent=parent,
+            message=message,
+            uploads=uploads,
+            password=password,
+            sage=sage,
+            verify=verify,
+        )
+        if isinstance(result, str):
+            session.rollback()
+        return result
+    except Exception:
+        session.rollback()
+        raise
+
+
+def posting_state_error(
+    session: Session, options: BoardOption, parent: int, verify: str | None
+) -> str | None:
     if options.stop_board:
         return "Постинг приостановлен"
     if verify:
@@ -297,8 +325,6 @@ def submit_post(
         )
         if already_used:
             return "Капча уже использована"
-    if password and len(password) > 100:
-        return "Пароль не должен превышать 100 символов"
     if parent:
         parent_exists = session.scalar(
             select(func.count())
@@ -307,8 +333,27 @@ def submit_post(
         )
         if not parent_exists:
             return "Такого треда не существует"
-        if not plain_reply_has_content(message) and not uploads:
-            return "Ответ должен содержать сообщение или файл"
+    return None
+
+
+def _submit_post(
+    session: Session,
+    options: BoardOption,
+    *,
+    parent: int,
+    message: str,
+    uploads: list,
+    password: str | None,
+    sage: bool,
+    verify: str | None,
+) -> int | str:
+    state_error = posting_state_error(session, options, parent, verify)
+    if state_error:
+        return state_error
+    if password and len(password) > 100:
+        return "Пароль не должен превышать 100 символов"
+    if parent and not plain_reply_has_content(message) and not uploads:
+        return "Ответ должен содержать сообщение или файл"
 
     message_validation = validate_message(session, options, message)
     if message_validation:
@@ -328,59 +373,54 @@ def submit_post(
             6: "Ваш пост не прошёл фильтр от вайпа",
         }[file_validation]
 
-    status_time = throttled_status_time(session, parent)
-    if isinstance(status_time, str):
-        return status_time
+    with stage_uploads(uploads) as staged:
+        uploaded_files = staged.uploaded
+        password_hash = hash_password(password) if parent == 0 and password else None
+        post_id = next_post_id(session, options)
+        session.refresh(options)
+        state_error = posting_state_error(session, options, parent, verify)
+        if state_error:
+            return state_error
+        status_time = throttled_status_time(session, parent)
+        if isinstance(status_time, str):
+            return status_time
 
-    uploaded_files = upload_files(uploads)
-    post_id = next_post_id(session, options)
-
-    if parent:
-        replies_count = int(
-            session.scalar(
-                select(func.count())
-                .select_from(Post)
-                .where(Post.parent == parent, Post.status == STATUS_ACTIVE)
+        if parent:
+            replies_count = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(Post)
+                    .where(Post.parent == parent, Post.status == STATUS_ACTIVE)
+                )
+                or 0
             )
-            or 0
+            if replies_count >= options.bump_limit:
+                sage = True
+
+        post = Post(
+            id=post_id,
+            parent=parent,
+            sage=sage,
+            time=display_time(),
+            message=transform_message(session, message) if message else None,
+            file1=uploaded_files[0]["name"] if len(uploaded_files) > 0 else None,
+            file1_info=uploaded_files[0]["info"] if len(uploaded_files) > 0 else None,
+            file2=uploaded_files[1]["name"] if len(uploaded_files) > 1 else None,
+            file2_info=uploaded_files[1]["info"] if len(uploaded_files) > 1 else None,
+            file3=uploaded_files[2]["name"] if len(uploaded_files) > 2 else None,
+            file3_info=uploaded_files[2]["info"] if len(uploaded_files) > 2 else None,
+            file4=uploaded_files[3]["name"] if len(uploaded_files) > 3 else None,
+            file4_info=uploaded_files[3]["info"] if len(uploaded_files) > 3 else None,
+            status=STATUS_ACTIVE,
+            status_time=int(status_time),
+            password_hash=password_hash,
+            verify=verify,
         )
-        if replies_count >= options.bump_limit:
-            sage = True
+        session.add(post)
+        session.flush()
+        staged.publish()
 
-    post = Post(
-        id=post_id,
-        parent=parent,
-        sage=sage,
-        time=display_time(),
-        message=transform_message(session, message) if message else None,
-        file1=uploaded_files[0]["name"] if len(uploaded_files) > 0 else None,
-        file1_info=uploaded_files[0]["info"] if len(uploaded_files) > 0 else None,
-        file2=uploaded_files[1]["name"] if len(uploaded_files) > 1 else None,
-        file2_info=uploaded_files[1]["info"] if len(uploaded_files) > 1 else None,
-        file3=uploaded_files[2]["name"] if len(uploaded_files) > 2 else None,
-        file3_info=uploaded_files[2]["info"] if len(uploaded_files) > 2 else None,
-        file4=uploaded_files[3]["name"] if len(uploaded_files) > 3 else None,
-        file4_info=uploaded_files[3]["info"] if len(uploaded_files) > 3 else None,
-        status=STATUS_ACTIVE,
-        status_time=int(status_time),
-        password_hash=hash_password(password) if parent == 0 and password else None,
-        verify=verify,
-    )
-    session.add(post)
-    session.flush()
-
-    recent_verify_ids = (
-        select(Post.id)
-        .where(Post.verify.is_not(None))
-        .order_by(desc(Post.id))
-        .limit(100)
-    )
-    session.execute(
-        update(Post)
-        .where(Post.verify.is_not(None), Post.id.not_in(recent_verify_ids))
-        .values(verify=None)
-    )
-    session.commit()
+        session.commit()
     manage_thread_statuses(session, options)
     if random.randint(1, 100) == 1:
         cleanup_files(session)
@@ -394,34 +434,44 @@ def moderate_posts(session: Session, post_ids: list[int], password: str) -> bool
     status_time = int(f"{str(int(time.time()))[:-3]}000")
     moderated = False
     if verify_password(password, options.password_hash):
-        session.execute(
+        changed = session.execute(
             update(Post)
             .where(or_(Post.id.in_(post_ids), Post.parent.in_(post_ids)))
             .values(status=STATUS_ADMIN_DELETED, status_time=status_time)
         )
-        moderated = True
+        moderated = changed.rowcount > 0
     else:
         for post_id in post_ids:
             post = session.get(Post, post_id)
-            if not post:
+            if not post or post.status not in (STATUS_ACTIVE, STATUS_ARCHIVED):
                 continue
             if post.parent == 0:
                 if verify_password(password, post.password_hash):
-                    session.execute(
+                    changed = session.execute(
                         update(Post)
-                        .where(or_(Post.id == post_id, Post.parent == post_id))
+                        .where(
+                            or_(Post.id == post_id, Post.parent == post_id),
+                            Post.status.in_([STATUS_ACTIVE, STATUS_ARCHIVED]),
+                        )
                         .values(status=STATUS_OP_DELETED, status_time=status_time)
                     )
-                    moderated = True
+                    moderated = changed.rowcount > 0 or moderated
             else:
                 thread = session.get(Post, post.parent)
-                if thread and verify_password(password, thread.password_hash):
-                    session.execute(
+                if (
+                    thread
+                    and thread.status != STATUS_ADMIN_DELETED
+                    and verify_password(password, thread.password_hash)
+                ):
+                    changed = session.execute(
                         update(Post)
-                        .where(Post.id == post_id)
+                        .where(
+                            Post.id == post_id,
+                            Post.status.in_([STATUS_ACTIVE, STATUS_ARCHIVED]),
+                        )
                         .values(status=STATUS_OP_DELETED, status_time=status_time)
                     )
-                    moderated = True
+                    moderated = changed.rowcount > 0 or moderated
     if moderated:
         session.commit()
         manage_thread_statuses(session, options)
@@ -436,12 +486,12 @@ def restore_posts(session: Session, post_ids: list[int], password: str) -> int:
     is_admin = verify_password(password, options.password_hash)
     for post_id in post_ids:
         post = session.get(Post, post_id)
-        if not post:
+        if not post or post.status not in (STATUS_ADMIN_DELETED, STATUS_OP_DELETED):
             continue
         can_restore = is_admin
         if not can_restore and post.parent == 0 and post.status == STATUS_OP_DELETED:
             can_restore = verify_password(password, post.password_hash)
-        elif not can_restore and post.parent != 0:
+        elif not can_restore and post.parent != 0 and post.status == STATUS_OP_DELETED:
             parent_thread = session.get(Post, post.parent)
             can_restore = bool(
                 parent_thread and verify_password(password, parent_thread.password_hash)
@@ -451,7 +501,14 @@ def restore_posts(session: Session, post_ids: list[int], password: str) -> int:
         if post.parent == 0:
             session.execute(
                 update(Post)
-                .where(or_(Post.id == post_id, Post.parent == post_id))
+                .where(
+                    or_(Post.id == post_id, Post.parent == post_id),
+                    Post.status.in_(
+                        [STATUS_ADMIN_DELETED, STATUS_OP_DELETED]
+                        if is_admin
+                        else [STATUS_OP_DELETED]
+                    ),
+                )
                 .values(status=STATUS_ACTIVE)
             )
             restored_count += 1
@@ -461,7 +518,16 @@ def restore_posts(session: Session, post_ids: list[int], password: str) -> int:
             )
             if parent_status == STATUS_ACTIVE:
                 session.execute(
-                    update(Post).where(Post.id == post_id).values(status=STATUS_ACTIVE)
+                    update(Post)
+                    .where(
+                        Post.id == post_id,
+                        Post.status.in_(
+                            [STATUS_ADMIN_DELETED, STATUS_OP_DELETED]
+                            if is_admin
+                            else [STATUS_OP_DELETED]
+                        ),
+                    )
+                    .values(status=STATUS_ACTIVE)
                 )
                 restored_count += 1
     if restored_count:

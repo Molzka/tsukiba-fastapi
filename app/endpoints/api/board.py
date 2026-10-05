@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.database import get_session
 from app.deps import (
@@ -9,6 +10,7 @@ from app.deps import (
     get_redis,
     options_or_json_404,
     post_form_data,
+    read_post_form,
     request_uploads,
 )
 from app.presentation import api_page_context
@@ -76,15 +78,19 @@ async def api_captcha(request: Request, session: Session = Depends(get_session))
 @router.post("/post")
 async def api_submit_post(request: Request, session: Session = Depends(get_session)):
     options = options_or_json_404(session)
-    form = await post_form_data(request)
-    if not form["captcha"] or not form["verify"]:
-        return api_error("Необходимо решить капчу", 400)
-    if not await validate_captcha(
-        get_redis(request), options, form["captcha"], form["verify"]
-    ):
-        return api_error("Капча введена неверно", 400)
-    uploads = await prepare_uploads(await request_uploads(request))
-    result = submit_post(
+    async with read_post_form(request, options) as data:
+        form = post_form_data(data)
+        if not form["captcha"] or not form["verify"]:
+            return api_error("Необходимо решить капчу", 400)
+        if not await validate_captcha(
+            get_redis(request), options, form["captcha"], form["verify"]
+        ):
+            return api_error("Капча введена неверно", 400)
+        uploads = await prepare_uploads(
+            request_uploads(data), max_total_size=options.max_file_size
+        )
+    result = await run_in_threadpool(
+        submit_post,
         session,
         options,
         parent=form["parent"],

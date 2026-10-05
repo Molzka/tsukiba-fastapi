@@ -1,13 +1,16 @@
 from typing import Any
+from contextlib import asynccontextmanager
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from sqlalchemy.orm import Session
-from starlette.datastructures import UploadFile
+from starlette.datastructures import FormData, UploadFile
+from starlette.formparsers import FormParser, MultiPartException, MultiPartParser
 
 from app.models import BoardOption
 from app.services.board import get_options
+from app.services.files import MAX_FILES, SIZE_ERROR, UploadError
 from app.templating import templates
 
 
@@ -44,8 +47,57 @@ def options_or_json_404(session: Session) -> BoardOption:
     return options
 
 
-async def request_uploads(request: Request) -> list[UploadFile]:
-    form = await request.form()
+class BodyLimitExceeded(MultiPartException):
+    pass
+
+
+@asynccontextmanager
+async def read_post_form(request: Request, options: BoardOption):
+    multipart = (
+        request.headers.get("content-type", "").split(";", 1)[0].lower()
+        == "multipart/form-data"
+    )
+    limit = options.max_message_length * 12 + 64 * 1024
+    if multipart:
+        limit += options.max_file_size
+    received = 0
+
+    async def limited_stream():
+        nonlocal received
+        async for chunk in request.stream():
+            received += len(chunk)
+            if received > limit:
+                raise BodyLimitExceeded(SIZE_ERROR)
+            yield chunk
+
+    try:
+        if multipart:
+            parser = MultiPartParser(
+                request.headers,
+                limited_stream(),
+                max_files=MAX_FILES,
+                max_fields=16,
+                max_part_size=max(4096, options.max_message_length * 4),
+            )
+        else:
+            parser = FormParser(request.headers, limited_stream())
+        form = await parser.parse()
+    except BodyLimitExceeded as exc:
+        raise UploadError(SIZE_ERROR, 413) from exc
+    except MultiPartException as exc:
+        message = (
+            "Разрешено прикрепление не более 4 файлов"
+            if "Too many files" in str(exc)
+            else "Не удалось прочитать форму. Проверьте поля и прикреплённые файлы"
+        )
+        raise UploadError(message) from exc
+    try:
+        yield form
+    finally:
+        await form.close()
+
+
+def request_uploads(form: FormData) -> list[UploadFile]:
     uploads: list[UploadFile] = []
     for key in ("files[]", "files"):
         for value in form.getlist(key):
@@ -54,8 +106,7 @@ async def request_uploads(request: Request) -> list[UploadFile]:
     return uploads
 
 
-async def post_form_data(request: Request) -> dict[str, Any]:
-    form = await request.form()
+def post_form_data(form: FormData) -> dict[str, Any]:
     return {
         "parent": parse_int(form.get("parent")),
         "message": str(form.get("message") or ""),

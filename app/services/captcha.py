@@ -69,14 +69,21 @@ def captcha_image(captcha_code: str, captcha_type: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(buffer.getvalue()).decode()}"
 
 
-def fallback_verify_token(code: str, password_hash: str) -> str:
-    hour = time.strftime("%Y%m%d%H")
+def fallback_verify_token(
+    code: str,
+    password_hash: str,
+    *,
+    issued: int | None = None,
+    nonce: str | None = None,
+) -> str:
+    issued = int(time.time()) if issued is None else issued
+    nonce = secrets.token_urlsafe(16) if nonce is None else nonce
     digest = hmac.new(
         settings.captcha_secret.encode(),
-        f"{code.lower()}:{password_hash}:{hour}".encode(),
+        f"{code.lower()}:{password_hash}:{issued}:{nonce}".encode(),
         hashlib.sha256,
     ).hexdigest()
-    return f"hmac:{digest}"
+    return f"hmac:{issued}:{nonce}:{digest}"
 
 
 async def issue_captcha(redis: Redis | None, options: BoardOption) -> dict[str, str]:
@@ -100,13 +107,29 @@ async def validate_captcha(
     captcha = captcha.lower().strip()
     if redis is not None:
         key = f"captcha:{verify}"
-        stored = await redis.get(key)
-        if stored is None:
-            return False
-        if secrets.compare_digest(str(stored), captcha):
-            await redis.delete(key)
-            return True
+        return bool(
+            await redis.eval(
+                "if redis.call('GET', KEYS[1]) == ARGV[1] then "
+                "return redis.call('DEL', KEYS[1]) else return 0 end",
+                1,
+                key,
+                captcha,
+            )
+        )
+    try:
+        prefix, issued_text, nonce, digest = verify.split(":")
+        issued = int(issued_text)
+    except (ValueError, TypeError):
+        return False
+    if (
+        prefix != "hmac"
+        or not nonce
+        or not 0 <= time.time() - issued <= settings.captcha_ttl_seconds
+    ):
         return False
     return secrets.compare_digest(
-        verify, fallback_verify_token(captcha, options.password_hash)
+        verify.encode(),
+        fallback_verify_token(
+            captcha, options.password_hash, issued=issued, nonce=nonce
+        ).encode(),
     )

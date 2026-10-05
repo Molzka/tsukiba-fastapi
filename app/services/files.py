@@ -1,11 +1,14 @@
 import hashlib
+import json
+import math
 import mimetypes
-import random
 import shutil
 import subprocess
 import tempfile
 import time
+import warnings
 from dataclasses import dataclass
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 
@@ -22,6 +25,15 @@ ALLOWED_TYPES = {"image/jpeg", "image/png", "image/gif", "video/mp4", "video/web
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "mp4", "webm"}
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif"}
 VIDEO_TYPES = {"video/mp4", "video/webm"}
+MAX_FILES = 4
+UPLOAD_CHUNK_SIZE = 64 * 1024
+SIZE_ERROR = "Общий размер прикреплённых файлов превышает лимит"
+
+
+class UploadError(ValueError):
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass
@@ -49,12 +61,27 @@ def content_type_for(upload: UploadFile, extension: str) -> str:
     return guessed or "application/octet-stream"
 
 
-async def prepare_uploads(files: list[UploadFile] | None) -> list[PreparedUpload]:
+async def prepare_uploads(
+    files: list[UploadFile] | None, *, max_total_size: int
+) -> list[PreparedUpload]:
     prepared: list[PreparedUpload] = []
-    for upload in files or []:
-        if not upload.filename:
-            continue
-        data = await upload.read()
+    uploads = [upload for upload in files or [] if upload.filename]
+    if len(uploads) > MAX_FILES:
+        raise UploadError("Разрешено прикрепление не более 4 файлов")
+    remaining = max_total_size
+    for upload in uploads:
+        if upload.size is not None and upload.size > remaining:
+            raise UploadError(SIZE_ERROR, 413)
+        buffer = bytearray()
+        while True:
+            chunk = await upload.read(min(UPLOAD_CHUNK_SIZE, remaining + 1))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            if remaining < 0:
+                raise UploadError(SIZE_ERROR, 413)
+            buffer.extend(chunk)
+        data = bytes(buffer)
         if not data:
             continue
         extension = extension_from_name(upload.filename)
@@ -73,57 +100,82 @@ async def prepare_uploads(files: list[UploadFile] | None) -> list[PreparedUpload
 
 def image_dimensions(data: bytes) -> tuple[int, int] | None:
     try:
-        with Image.open(BytesIO(data)) as image:
-            image.verify()
-        with Image.open(BytesIO(data)) as image:
-            return image.size
-    except (OSError, UnidentifiedImageError):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(data)) as image:
+                image.verify()
+            with Image.open(BytesIO(data)) as image:
+                return image.size
+    except (
+        OSError,
+        SyntaxError,
+        UnidentifiedImageError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ):
         return None
+
+
+def run_media_command(
+    command: list[str], *, text: bool = False
+) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.PIPE if text else subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=text,
+            timeout=settings.media_process_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise UploadError(
+            "Превышено время обработки файла. Попробуйте файл меньшего размера", 504
+        ) from exc
+    except FileNotFoundError as exc:
+        raise UploadError(
+            "Обработчик медиа недоступен. Обратитесь к администратору", 503
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise UploadError(
+            "Не удалось обработать файл. Проверьте его формат и целостность"
+        ) from exc
 
 
 def probe_video_file(path: Path) -> tuple[str, str] | None:
+    result = run_media_command(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-protocol_whitelist",
+            "file,pipe",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height:format=duration",
+            "-of",
+            "json",
+            str(path),
+        ],
+        text=True,
+    )
     try:
-        resolution = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=width,height",
-                "-of",
-                "csv=s=x:p=0",
-                str(path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        duration_raw = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=nw=1:nk=1",
-                str(path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    except (FileNotFoundError, subprocess.CalledProcessError):
+        metadata = json.loads(result.stdout)
+        stream = metadata["streams"][0]
+        width, height = int(stream["width"]), int(stream["height"])
+        seconds_raw = float(metadata.get("format", {}).get("duration", 0))
+        if (
+            width <= 0
+            or height <= 0
+            or not math.isfinite(seconds_raw)
+            or seconds_raw < 0
+        ):
+            return None
+        seconds = int(seconds_raw)
+    except (ValueError, TypeError, KeyError, IndexError):
         return None
-
-    if not resolution:
-        return None
-    try:
-        seconds = int(float(duration_raw))
-    except ValueError:
-        seconds = 0
+    resolution = f"{width}x{height}"
     duration = f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
     return resolution, duration
 
@@ -144,7 +196,7 @@ def validate_files(
 ) -> int:
     if not uploads:
         return 0 if parent != 0 else 1
-    if len(uploads) > 4:
+    if len(uploads) > MAX_FILES:
         return 2
     if sum(len(upload.data) for upload in uploads) > options.max_file_size:
         return 5
@@ -201,95 +253,116 @@ def create_video_thumbnail(
     destination.parent.mkdir(parents=True, exist_ok=True)
     probe = probe_video_file(source)
     if not probe:
-        create_placeholder_thumbnail(destination)
-        return
-    resolution, duration = probe
-    try:
-        width, height = [int(value) for value in resolution.split("x", 1)]
-        seconds = sum(
-            int(part) * factor
-            for part, factor in zip(duration.split(":"), [3600, 60, 1])
-        )
-    except ValueError:
-        width, height, seconds = max_size, max_size, 1
-    aspect = width / height if height else 1
+        raise UploadError("Прикреплён повреждённый видеофайл")
+    resolution, _ = probe
+    width, height = [int(value) for value in resolution.split("x", 1)]
+    aspect = width / height
     if width <= max_size and height <= max_size:
         thumb_width, thumb_height = width, height
     elif width > height:
         thumb_width, thumb_height = max_size, max(1, int(max_size / aspect))
     else:
         thumb_height, thumb_width = max_size, max(1, int(max_size * aspect))
-    seek = f"{random.uniform(0, min(5, max(seconds, 1))):.3f}"
-    try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-ss",
-                seek,
-                "-i",
-                str(source),
-                "-vf",
-                f"scale={thumb_width}:{thumb_height}:force_original_aspect_ratio=decrease",
-                "-vframes",
-                "1",
-                str(destination),
-            ],
-            check=True,
-            capture_output=True,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        create_placeholder_thumbnail(destination)
-
-
-def create_placeholder_thumbnail(destination: Path) -> None:
-    image = Image.new("RGB", (180, 100), (234, 234, 234))
-    image.save(destination, "WEBP", quality=50)
+    run_media_command(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            "0",
+            "-protocol_whitelist",
+            "file,pipe",
+            "-i",
+            str(source),
+            "-vf",
+            f"scale={thumb_width}:{thumb_height}:force_original_aspect_ratio=decrease",
+            "-vframes",
+            "1",
+            str(destination),
+        ]
+    )
+    if not destination.is_file() or destination.stat().st_size == 0:
+        raise UploadError("Не удалось создать миниатюру видеофайла")
 
 
 def strip_metadata(path: Path) -> None:
+    if path.suffix.lower() != ".webm" and shutil.which("exiftool"):
+        run_media_command(["exiftool", "-all=", "-overwrite_original", str(path)])
+
+
+@dataclass
+class StagedFiles:
+    uploaded: list[dict[str, str]]
+    pending: dict[Path, Path]
+    created: list[Path]
+
+    def publish(self) -> None:
+        for destination, source in self.pending.items():
+            if destination.exists():
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(destination)
+            self.created.append(destination)
+
+
+@contextmanager
+def stage_uploads(uploads: list[PreparedUpload]):
+    staged = StagedFiles(uploaded=[], pending={}, created=[])
     try:
-        subprocess.run(
-            ["exiftool", "-all=", "-overwrite_original", str(path)],
-            check=False,
-            capture_output=True,
-        )
-    except FileNotFoundError:
-        return
+        ensure_storage_dirs()
+        with (
+            tempfile.TemporaryDirectory(dir=settings.media_dir) as staging,
+            tempfile.TemporaryDirectory(dir=settings.thumb_dir) as thumb_staging,
+        ):
+            for upload in uploads:
+                filename = f"{upload.digest}.{upload.extension}"
+                subdir = get_subdir_path(upload.digest)
+                media_path = settings.media_dir / subdir / filename
+                thumb_path = settings.thumb_dir / subdir / f"{upload.digest}.webp"
+                source = Path(staging) / filename
+                staged_thumb = Path(thumb_staging) / f"{filename}.webp"
+                source.write_bytes(upload.data)
+                strip_metadata(source)
+                if upload.content_type in IMAGE_TYPES:
+                    create_image_thumbnail(source.read_bytes(), staged_thumb)
+                else:
+                    create_video_thumbnail(source, staged_thumb)
+                staged.pending[thumb_path] = staged_thumb
+                staged.pending[media_path] = source
+
+                info = readable_bytes(source.stat().st_size)
+                if upload.content_type in IMAGE_TYPES:
+                    dimensions = image_dimensions(source.read_bytes())
+                    if dimensions:
+                        info += f", {dimensions[0]}x{dimensions[1]}"
+                else:
+                    video_info = probe_video_file(source)
+                    if video_info:
+                        info += f", {video_info[0]}, {video_info[1]}"
+                staged.uploaded.append({"name": filename, "info": info})
+
+            try:
+                yield staged
+            except Exception:
+                for path in reversed(staged.created):
+                    path.unlink(missing_ok=True)
+                raise
+    except (
+        OSError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ) as exc:
+        raise UploadError(
+            "Не удалось сохранить или обработать файл. Попробуйте другой файл"
+        ) from exc
 
 
 def upload_files(uploads: list[PreparedUpload]) -> list[dict[str, str]]:
-    ensure_storage_dirs()
-    uploaded: list[dict[str, str]] = []
-    for upload in uploads:
-        filename = f"{upload.digest}.{upload.extension}"
-        subdir = get_subdir_path(upload.digest)
-        media_dir = settings.media_dir / subdir
-        thumb_dir = settings.thumb_dir / subdir
-        media_dir.mkdir(parents=True, exist_ok=True)
-        thumb_dir.mkdir(parents=True, exist_ok=True)
-        media_path = media_dir / filename
-        thumb_path = thumb_dir / f"{upload.digest}.webp"
-
-        if not media_path.exists():
-            media_path.write_bytes(upload.data)
-            strip_metadata(media_path)
-            if upload.content_type in IMAGE_TYPES:
-                create_image_thumbnail(media_path.read_bytes(), thumb_path)
-            elif upload.content_type in VIDEO_TYPES:
-                create_video_thumbnail(media_path, thumb_path)
-
-        info = readable_bytes(media_path.stat().st_size)
-        if upload.content_type in IMAGE_TYPES:
-            dimensions = image_dimensions(media_path.read_bytes())
-            if dimensions:
-                info += f", {dimensions[0]}x{dimensions[1]}"
-        elif upload.content_type in VIDEO_TYPES:
-            video_info = probe_video_file(media_path)
-            if video_info:
-                info += f", {video_info[0]}, {video_info[1]}"
-        uploaded.append({"name": filename, "info": info})
-    return uploaded
+    with stage_uploads(uploads) as staged:
+        staged.publish()
+        return staged.uploaded
 
 
 def cleanup_files(session: Session) -> None:

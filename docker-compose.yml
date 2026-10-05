@@ -6,8 +6,9 @@ services:
     environment:
       DATABASE_URL: sqlite:////data/tsukiba.db
       REDIS_URL: redis://redis:6379/0
-      MANAGE_KEY: secretkey
-      CAPTCHA_SECRET: change-this-secret
+      MANAGE_KEY: ${MANAGE_KEY:?Set MANAGE_KEY in .env}
+      CAPTCHA_SECRET: ${CAPTCHA_SECRET:?Set CAPTCHA_SECRET in .env}
+      MEDIA_PROCESS_TIMEOUT_SECONDS: ${MEDIA_PROCESS_TIMEOUT_SECONDS:-15}
     volumes:
       - board-data:/data
       - ./assets:/app/assets
@@ -15,7 +16,8 @@ services:
       - ./thumb:/app/thumb
       - ./favicon.ico:/app/favicon.ico:ro
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   redis:
@@ -23,6 +25,11 @@ services:
     volumes:
       - redis-data:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 volumes:
   board-data:

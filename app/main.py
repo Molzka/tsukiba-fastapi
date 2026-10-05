@@ -12,7 +12,7 @@ from app.endpoints.actions import manage as manage_actions
 from app.endpoints.actions import moderation, posts
 from app.endpoints.api import board as api_board
 from app.endpoints.pages import admin, board
-from app.services.files import ensure_storage_dirs
+from app.services.files import UploadError, ensure_storage_dirs
 
 
 @asynccontextmanager
@@ -58,3 +58,10 @@ async def not_found_handler(request: Request, exc: HTTPException):
     if request.url.path.startswith("/api/"):
         return JSONResponse({"error": "Страница не найдена"}, status_code=404)
     return error_response(request)
+
+
+@app.exception_handler(UploadError)
+async def upload_error_handler(request: Request, exc: UploadError):
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
+    return error_response(request, str(exc), exc.status_code)
